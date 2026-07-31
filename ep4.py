@@ -7,7 +7,7 @@ from pathlib import Path
 load_dotenv(override=True)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-print(TELEGRAM_BOT_TOKEN)
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 from telegram import Update
 from telegram.ext import Application,CommandHandler,MessageHandler,filters
@@ -23,15 +23,22 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
     tool #创建mcp使用的内容
 )
+def is_owner(update: Update) -> bool:
+    """检查发送者是否为 Bot 主人"""
+    return update.effective_user.id == OWNER_ID
 
 # 启动函数映射
 async def start(update:Update,context):
     """处理/start命令"""
+    if not is_owner(update):
+        await update.message.reply_text("你没有权限使用此Bot")
+        return
     await update.message.reply_text("Hello! I'm your bot.我是你爸爸")
 
-#核心函数
-#1.添加内置对应工具，read,write等
-#2.添加MCP工具并执行
+#添加功能
+#1.让别人没办法使用我的Bot
+#2.能够执行bash命令
+#3.进行网络搜索
 
 def create_mcp_server_tools(bot,chat_id:int)->list:
     @tool("send_message","发送消息给用户",{"text":str})
@@ -61,6 +68,7 @@ async def ask_claude(prompt:str,bot:Any,chat_id:int)->str: # 调用模型
     tools = create_mcp_server_tools(bot,chat_id)
     async def _allow_all_tools(*_):
         return PermissionResultAllow(behavior="allow")
+    # 实际上bash命令还是不能执行
     options = ClaudeAgentOptions(
         # 当前的工作目录
         cwd=str(WORKSPACE_DIR),
@@ -72,8 +80,12 @@ async def ask_claude(prompt:str,bot:Any,chat_id:int)->str: # 调用模型
             "edit", # 编辑对应文件
             "glob", # 查找对应文件
             "grep",  # 在文件中搜索内容
+            "web_search", # 搜索
+            "web_fetch", # 获取url里面的内容
+            "bash",
             "mcp__assistant__send_message" # ← 授权：告诉Claude"你可以用这些"
             # 具体名字取决于 SDK 的命名规则，可能需要调试确认，常见格式是 mcp__<服务器名>__<工具名>
+        
         ],#允许使用的工具
         agents={
             "coder":AgentDefinition(
@@ -112,6 +124,9 @@ async def ask_claude(prompt:str,bot:Any,chat_id:int)->str: # 调用模型
 
 async def handle_message(update:Update,context):
     """用claude 处理用户消息"""
+    if not is_owner(update):
+        await update.message.reply_text("你没有权限使用此Bot")
+        return
     if not update.message or not update.message.text: # 如果用户的消息为空
         return
     response = await ask_claude(prompt=update.message.text,bot=context.bot,chat_id=update.effective_chat.id)
@@ -121,7 +136,10 @@ async def handle_message(update:Update,context):
     pass
 
 async def end(update:Update,context):
-    """处理"""
+    """处理/end命令"""
+    if not is_owner(update):
+        await update.message.reply_text("你没有权限使用此Bot")
+        return
     await update.message.reply_text("再见啦北鼻")
 
 def main():
