@@ -80,7 +80,7 @@ CLAUDE_MD_TEMPLATE = f"""# {ASSISTANT_NAME} - 个人 AI 助手
 - 这个文件（CLAUDE.md）是你的长期记忆
 - `conversations/` 文件夹包含按日期整理的对话历史
 - 使用 Glob 和 Grep 搜索过去的对话
-- 随时更新这个文件来记住重要信息
+- 随时更新这个文件来记住重要信息,你自己判断用户的信息是否是值得记忆的长期信息
 
 ## 对话历史
 `conversations/` 中的文件按日期命名（YYYY-MM-DD.md）。
@@ -185,11 +185,7 @@ async def _run_agent_inner(prompt:str,bot:Any,chat_id:int)->str: # 调用模型
                 tools=tools
             )
         },
-        system_prompt="""你是一个运行在 Telegram 中的助手Bot。请遵守以下规则：
-        1. 工具优先：当用户要求你做任何操作（发消息、读写文件等），必须调用对应的工具来完成，不要用纯文字模拟
-        2. 主动反馈：每次完成一个步骤，先用 send_message 告诉用户当前进度
-        3. 失败了也要说：工具调用失败时，用 send_message 告诉用户发生了什么
-        4. 完成任务后：用 send_message 发送最终结果给用户""",
+        system_prompt=CLAUDE_MD_TEMPLATE,
     )
     session_id = load_session_id() # 如果有会话先恢复
     if session_id:
@@ -237,6 +233,7 @@ async def clear(update:Update,context)->None:
 
 def main():
     """主函数"""
+    ensure_workspace()
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     #app注册器
     # add_handler 添加处理程序
