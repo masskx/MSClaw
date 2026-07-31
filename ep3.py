@@ -1,154 +1,135 @@
-# MCP工具与文件操作
+from nt import write
 import os
-from typing import Any, AsyncGenerator
-
+import logging
 from dotenv import load_dotenv
-
-from ep1 import handle_message
+from pathlib import Path
 
 load_dotenv(override=True)
-from telegram import Update # 用来
-from telegram.constants import ChatAction # 用来发送
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, Updater
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,  # 工具提示词
-    ResultMessage,  # 结果包含了耗时Token用量这些
-    TextBlock,
-    create_sdk_mcp_server,  # 进程内创建MCP服务器，直接在python 中运行
-    query,
-    tool, AgentDefinition,
-)
-#配置
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL")
-OWNER_ID = int(os.getenv("OWNER_ID"))
-# 工作目录设置
-from pathlib import Path
-BASE_DIR = Path(__file__).resolve().parent
-WORKSPACE_DIR = BASE_DIR / "workspace"
+print(TELEGRAM_BOT_TOKEN)
 
+from telegram import Update
+from telegram.ext import Application,CommandHandler,MessageHandler,filters
+from typing import Any
+from claude_agent_sdk import (
+    AgentDefinition,
+    AssistantMessage, # claude回复的消息
+    ClaudeAgentOptions,
+    PermissionResultAllow, # 启动claude的配置项（MCP，工具，系统提示词等）
+    ResultMessage, # 最终的执行结果
+    TextBlock, # 文本块的内容
+    query, # 核心函数，发送消息给claue Agent 然后获取回复
+    create_sdk_mcp_server,
+    tool #创建mcp使用的内容
+)
 
-# MCP工具定义
-"""
-  MCP (Model Context Protocol) 是 Anthropic 定义的标准协议：
+# 启动函数映射
+async def start(update:Update,context):
+    """处理/start命令"""
+    await update.message.reply_text("Hello! I'm your bot.我是你爸爸")
 
-  ┌─────────────┐     MCP Protocol     ┌─────────────┐
-  │  Claude CLI │  ←────────────────→  │ MCP Server  │
-  │  (子进程)    │   (JSON-RPC/stdio)   │ (Python进程) │
-  └─────────────┘                      └─────────────┘
-                                        │
-                                        ↓
-                                     你的工具函数
-"""
-def create_mcp_tools(bot:Any,chat_id:int)->list:
-    """创建MCP工具，绑定bot和上下文聊天"""
+#核心函数
+#1.添加内置对应工具，read,write等
+#2.添加MCP工具并执行
+
+def create_mcp_server_tools(bot,chat_id:int)->list:
     @tool("send_message","发送消息给用户",{"text":str})
-    async def send_message(args:dict[str,Any])->dict[str,Any]:
-        """通过telegram发送消息给用户"""
+    async def send_message(args)->dict[str,Any]:
+        # 主动给用户发消息
         await bot.send_message(chat_id=chat_id,text=args["text"])
-        return {"content":[{"type":"text","text":"消息已发送"}]}
+        # 返回值是告诉Agent发送消息的结果
+        return {
+            "content":[
+                {
+                    "type":"text",
+                    "text":f"已经向用户发送消息：{args["text"]}"
+                }
+            ]
+        }
     return[send_message]
 
-#Agent执行
-async def run_agent(prompt:str,bot:Any,chat_id:int)->str:
-    """运行Claude Agent工具"""
-    tools = create_mcp_tools(bot,chat_id)
-    mcp_server = create_sdk_mcp_server(name="assistant",tools=tools)
+# 工作目录，在这里操作文件
+BASE_DIR = Path(__file__).resolve().parent
+WORKSPACE_DIR = BASE_DIR/"workspace"
+async def ask_claude(prompt:str,bot:Any,chat_id:int)->str: # 调用模型
     env = {
-        "ANTHROPIC_API_KEY":ANTHROPIC_API_KEY,
-        "ANTHROPIC_BASE_URL":ANTHROPIC_BASE_URL
-        }
-
-    # 构建增强的prompt，明确指定工作目录
-    enhanced_prompt = f"""工作目录: {WORKSPACE_DIR}
-
-重要提示: 当创建或操作文件时，请使用相对路径或确保文件在工作目录 {WORKSPACE_DIR} 内。
-
-用户请求: {prompt}"""
-
-    options = ClaudeAgentOptions(
-        cwd=str(WORKSPACE_DIR),
-        allowed_tools=[
-            "read","write","edit","glob","grep",# 文件操作
-            "mcp_assistant_send_message",
-        ],
-        permission_mode="acceptEdits",#自动接受文件编辑
-        mcp_servers={"assistant":mcp_server},
-        env=env,
-    )
-    agents = {
-        "coder":AgentDefinition(
-            description="专业程序员",
-            prompt="你是一个程序员",
-            tools=["read","write","bash"],
-        )
+        "ANTHROPIC_API_KEY":os.getenv("ANTHROPIC_API_KEY"),
+        "ANTHROPIC_BASE_URL":os.getenv("ANTHROPIC_BASE_URL")
     }
-    async def _make_prompt(text:str)->AsyncGenerator[dict,None]:
-        """构造异步生成器prompt"""
+    # 创建mcp工具有哪些tools
+    tools = create_mcp_server_tools(bot,chat_id)
+    async def _allow_all_tools(*_):
+        return PermissionResultAllow(behavior="allow")
+    options = ClaudeAgentOptions(
+        # 当前的工作目录
+        cwd=str(WORKSPACE_DIR),
+        # 可用的工具
+        can_use_tool=_allow_all_tools, # 使用mcp工具需要调用权限
+        allowed_tools=[
+            "read", # 读取文件
+            "write",# 覆盖写入对应文件
+            "edit", # 编辑对应文件
+            "glob", # 查找对应文件
+            "grep",  # 在文件中搜索内容
+            "mcp__assistant__send_message" # ← 授权：告诉Claude"你可以用这些"
+            # 具体名字取决于 SDK 的命名规则，可能需要调试确认，常见格式是 mcp__<服务器名>__<工具名>
+        ],#允许使用的工具
+        agents={
+            "coder":AgentDefinition(
+                description="专业程序员",
+                prompt="你是一个经验丰富的python开发者",
+                tools=["read","write","bash"]
+            )
+        },
+        permission_mode="acceptEdits", # 表示自动批准
+        env = env, #注入环境变量字典
+        mcp_servers={# ← 注册：告诉SDK"这个工具存在"
+            "assistant":create_sdk_mcp_server(
+                name="assistant",
+                tools=tools
+            )
+        }
+    )
+    async def _make_prompt(text:str):
+        """构造异步生成器"""
         yield {
             "type":"user",
             "message":{"role":"user","content":text},
         }
-    response_parts:list[str]=[]
-    result_text:str|None=None
-    async for message in query(prompt=_make_prompt(enhanced_prompt), options=options):
-        # 打印所有消息类型以便调试
-        print(f"[DEBUG] 收到消息类型: {type(message).__name__}")
-        print(f"[DEBUG] 消息内容: {message}")
-
-        if isinstance(message,AssistantMessage):
-            for block in message.content:
-                if isinstance(block,TextBlock):
-                    response_parts.append(block.text)
-        elif isinstance(message,ResultMessage):
+    # ---- 只取 ResultMessage 最终结果 ----
+    async for message in query(prompt=_make_prompt(prompt),options = options):
+        if isinstance(message,ResultMessage):
             if message.result:
-                result_text = message.result
+                print("claude最终结果：",message.result)
+                return message.result
+    return "我没有得到Claude回复"
 
-    # 检查工作目录中的文件
-    import os
-    files = os.listdir(WORKSPACE_DIR)
-    print(f"[DEBUG] workspace中的文件: {files}")
-
-    return "".join(response_parts) or result_text or "完成"
-
-#消息处理
-def is_owner(update):
-    return update.effective_user is not None and update.effective_user.id == OWNER_ID
-
-async def start(update:Update,context)->None:
-    """处理start命令"""
-    if not is_owner(update):
+async def handle_message(update:Update,context):
+    """用claude 处理用户消息"""
+    if not update.message or not update.message.text: # 如果用户的消息为空
         return
-    await update.message.reply_text(
-        "你好你好你好"
-    )
-async def handle_message(update:Update,context:CallbackContext)->None:
-    """用claude处理消息"""
-    if not is_owner(update):
-        return #忽略非主人消息
-    if not update.message or not update.message.text:
-        return
-    chat_id = update.effective_chat.id
-    await context.bot.send_chat_action(chat_id=chat_id,action=ChatAction.TYPING)
-    response = await run_agent(update.message.text,context.bot,chat_id)
-    max_length = 4096
+    response = await ask_claude(prompt=update.message.text,bot=context.bot,chat_id=update.effective_chat.id)
+    max_length = 4000
     for i in range(0,len(response),max_length):
-        await update.message.reply_text(response[i:i+max_length])
-def main()->None:
-    """启动机器人"""
-    WORKSPACE_DIR.mkdir(parents=True,exist_ok=True)
-    builder = Application.builder().token(TELEGRAM_BOT_TOKEN)
+        await update.message.reply_text(response[i:i + max_length])
+    pass
 
+async def end(update:Update,context):
+    """处理"""
+    await update.message.reply_text("再见啦北鼻")
 
-    app = builder.build()
-
-    app.add_handler(CommandHandler("start",start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_message))
-    print(f"Tool Bot启动了工作目录{WORKSPACE_DIR}")
+def main():
+    """主函数"""
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    #app注册器
+    # add_handler 添加处理程序
+    app.add_handler(CommandHandler("end",end)) # 处理/end命令
+    app.add_handler(CommandHandler("start",start)) # 处理/start命令
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_message)) #处理用户消息
+    print("Bot is running...")
     app.run_polling()
 
+# 只有作为主程序运行时，才执行main函数
 if __name__ == "__main__":
     main()
