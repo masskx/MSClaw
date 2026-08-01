@@ -125,14 +125,36 @@ uv run mypy src/
 
 ## Roadmap
 
-| Priority | Task | Notes |
-| --- | --- | --- |
-| **P0** | Harden tool permissions with workspace boundary enforcement | Security — before HTTP exposure |
-| **P1** | FastAPI health/chat endpoints with SSE streaming | Enables web client access |
-| **P1** | LangGraph state management and conditional routing | Structured multi-step workflows |
-| **P2** | Standalone custom MCP server | Extensible tool ecosystem |
-| **P2** | PostgreSQL/Redis persistence + Langfuse tracing | Production-grade observability |
-| **P3** | Docker Compose and GitHub Actions CI | Reproducible deployment |
+### Phase 1 — Security & Engineering Hardening 🛡️
+
+- [ ] **Sandbox** — Enforce workspace filesystem boundary, reject path traversal
+- [ ] **Tiered permissions** — Allowlist by tool category; Bash/Write require confirmation
+- [ ] **Boundary tests** — Parametrized tests for path traversal, symlinks, absolute paths
+- [ ] **pre-commit hooks** — Auto-run ruff + pytest before each commit
+
+### Phase 2 — FastAPI & Webhook Dual-Channel 🌐
+
+- [ ] **Health endpoint** — `GET /health` returning bot status and workspace info
+- [ ] **Chat endpoint** — `POST /chat` reusing existing `AgentService.run()`
+- [ ] **SSE streaming** — `/chat/stream` with `text/event-stream` for real-time responses
+- [ ] **Telegram webhook** — Replace polling with webhook mode (local dev via ngrok)
+- [ ] **API integration tests** — `httpx.AsyncClient` + `pytest-asyncio`
+
+### Phase 3 — LangGraph Multi-Step Workflows 🔗
+
+- [ ] **State machine** — `StateGraph` with states: `thinking → acting → waiting_approval → done`
+- [ ] **Conditional routing** — Route by tool result: success / retry / escalate for approval
+- [ ] **Human-in-the-loop** — `InlineKeyboard` approval for destructive operations in Telegram
+- [ ] **Checkpoint persistence** — LangGraph checkpoints replacing raw `state.json`
+- [ ] **Workflow tests** — Assert state transitions given input + current state
+
+### Phase 4 — Database & Observability 📊
+
+- [ ] **Storage protocol** — Abstract `FileStorage` behind a `Storage` interface
+- [ ] **SQLite backend** — `aiosqlite`-based session & conversation storage
+- [ ] **Redis session cache** — Hot sessions in Redis, cold storage in SQLite
+- [ ] **Langfuse tracing** — Token usage, latency, tool-call chains, error tracking
+- [ ] **Docker Compose** — One-command orchestration: bot + Redis + optional PostgreSQL
 
 ## Project Structure
 
