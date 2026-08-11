@@ -11,6 +11,7 @@ from claude_agent_sdk import (
     AgentDefinition,
     ClaudeAgentOptions,
     PermissionResultAllow,
+    ProcessError,
     ResultMessage,
     create_sdk_mcp_server,
     query,
@@ -53,17 +54,29 @@ class AgentService:
         self._lock = asyncio.Lock()
 
     async def run(self, prompt: str, bot: Any, chat_id: int) -> str:
-        if not prompt.strip():
+        if not prompt.strip(): # 先校验消息为空的情况，然后抛异常
             raise ValueError("prompt must not be empty")
         async with self._lock:
-            return await self._run(prompt, bot, chat_id)
+            return await self._run(prompt, bot, chat_id) # 不为空调用模型
 
     async def _run(self, prompt: str, bot: Any, chat_id: int) -> str:
         options = self._build_options(bot, chat_id)
         session_id = self.storage.load_session_id()
         if session_id:
             options.resume = session_id
+        try:
+            return await self._query(prompt, options)
+        except ProcessError:
+            # The stored session no longer exists locally (e.g. ~/.claude was
+            # cleaned or the session belongs to another working directory), so
+            # the CLI refuses to resume. Fall back to a fresh conversation.
+            LOGGER.warning(
+                "Resuming session %s failed, falling back to a new session", session_id
+            )
+            self.storage.clear_session_id()
+            return await self._query(prompt, self._build_options(bot, chat_id))
 
+    async def _query(self, prompt: str, options: ClaudeAgentOptions) -> str:
         async for message in self._query_runner(prompt=self._prompt(prompt), options=options):
             if isinstance(message, ResultMessage):
                 if message.session_id:
