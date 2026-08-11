@@ -4,3 +4,8 @@
 .kilo/
 __pycache__/
 *.pyc
+*.log
+
+# Runtime state (recreated at startup)
+data/
+workspace/
