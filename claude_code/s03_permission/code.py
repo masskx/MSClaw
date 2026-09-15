@@ -1,49 +1,7 @@
-#!/usr/bin/env python3
-"""
-s03_permission.py - Permission System
-
-Three gates inserted before tool execution:
-
-    Gate 1: Hard deny list (rm -rf /, sudo, ...)
-    Gate 2: Rule matching (write outside workspace? destructive cmd?)
-    Gate 3: User approval (pause and wait for confirmation)
-
-    +----------+      +-------+      +--------------+      +---------------+
-    |   User   | ---> |  LLM  | ---> | Permission   | ---> | Tool Dispatch |
-    |  prompt  |      |       |      | 1. deny list |      | execute       |
-    +----------+      +---+---+      | 2. rules     |      +-------+-------+
-                          ^          | 3. approval  |              |
-                          |          +------+-------+              |
-                          |                 | deny                 |
-                          |                 v                      v
-                          |          +-------------------------------+
-                          +----------+ tool_result: denied or output |
-                                     +-------------------------------+
-
-Only one line added to the agent loop:
-
-    if not check_permission(block):
-        continue
-
-Builds on s02 (multi-tool). Usage:
-
-    python s03_permission/code.py
-    Needs: pip install anthropic python-dotenv + ANTHROPIC_API_KEY in .env
-"""
-
-import os
-import re
+import os 
+import re 
 import subprocess
 from pathlib import Path
-
-try:
-    import readline
-    readline.parse_and_bind('set bind-tty-special-chars off')
-    readline.parse_and_bind('set input-meta on')
-    readline.parse_and_bind('set output-meta on')
-    readline.parse_and_bind('set convert-meta off')
-except ImportError:
-    pass
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -56,12 +14,11 @@ WORKDIR = Path.cwd()
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 MODEL = os.environ["MODEL_ID"]
 
-SYSTEM = f"You are a coding agent at {WORKDIR}. All destructive operations require user approval."
+SYSTEM = f"You are a coding agent at {WORKDIR}.ALL destructive operations require user approval."
 
+# 工具定义
 
-# -- From s02: tool implementations --
-
-def run_bash(command: str) -> str:
+def run_bash(command:str)->str:
     try:
         r = subprocess.run(command, shell=True, cwd=WORKDIR,
                            capture_output=True, text=True, errors="replace", timeout=120)
@@ -70,8 +27,7 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
-
-def run_read(path: str, limit: int | None = None) -> str:
+def run_read(path:str,limit:int | None = None)->str:
     try:
         lines = (WORKDIR / path).resolve().read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
@@ -80,46 +36,40 @@ def run_read(path: str, limit: int | None = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-
-def run_write(path: str, content: str) -> str:
+def run_write(path:str, content:str)->str:
     try:
         file_path = (WORKDIR / path).resolve()
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding="utf-8")
+        file_path.parent.mkdir(parents=True,exist_ok=True)
+        file_path.write_text(content,encoding="utf-8")
         return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error:{e}"
 
-
-def run_edit(path: str, old_text: str, new_text: str) -> str:
+def run_edit(path:str,old_text:str,new_text:str)->str:
     try:
         file_path = (WORKDIR / path).resolve()
-        text = file_path.read_text(encoding="utf-8")
+        text = file_path.read_bytes(encoding="utf-8")
         if old_text not in text:
             return f"Error: text not found in {path}"
-        file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+        file_path.write_bytes(text.replace(old_text,new_text,1).encoding("utf-8"))
         return f"Edited {path}"
     except Exception as e:
         return f"Error: {e}"
 
-
-def run_glob(pattern: str) -> str:
+def run_glob(pattern:str)->str:
     import glob as g
     try:
         matches = sorted({
-            match for match in g.glob(
-                pattern, root_dir=WORKDIR, recursive=True)
+            match for match in g.glob(pattern,recursive=True)
             if (WORKDIR / match).resolve().is_relative_to(WORKDIR)
         })
         shown = matches[:200]
         if len(matches) > 200:
-            shown.append("... (more matches omitted; narrow the pattern)")
+            shown.append(f"... ({len(matches) - 200} more matches)")
         return "\n".join(shown) if shown else "(no matches)"
     except Exception as e:
         return f"Error: {e}"
 
-
-# -- From s02 (unchanged): tool definitions and dispatch --
 
 TOOLS = [
     {"name": "bash", "description": "Run a shell command.",
@@ -135,32 +85,28 @@ TOOLS = [
 ]
 
 TOOL_HANDLERS = {
-    "bash": run_bash, "read_file": run_read, "write_file": run_write,
-    "edit_file": run_edit, "glob": run_glob,
+    'bash': run_bash,
+    'read_file': run_read,
+    'write_file': run_write,    
+    'edit_file': run_edit,
+    'glob': run_glob,
 }
 
 
-# -- New in s03: three-gate permission pipeline --
-
-# Gate 1: Hard deny list - always forbidden
 DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=", "> /dev/sda"]
 
-def check_deny_list(command: str) -> str | None:
+def check_deny_list(command:str)->str |None:
     for pattern in DENY_LIST:
         if pattern in command:
-            return f"Blocked: '{pattern}' is on the deny list"
+            return f"Error: Command contains forbidden pattern '{pattern}'"
     return None
 
-
-# Gate 2: Rule matching - context-dependent checks
 DESTRUCTIVE_COMMAND_WORD = re.compile(
     r"(?i)(?:^|[;&|()\n])\s*(?:rm|del)(?=\s|$|[;&|()])"
 )
 
-
 def contains_destructive_command(command: str) -> bool:
     return bool(DESTRUCTIVE_COMMAND_WORD.search(command))
-
 
 PERMISSION_RULES = [
     {"tools": ["read_file", "write_file", "edit_file"],
@@ -172,22 +118,19 @@ PERMISSION_RULES = [
      "message": "Potentially destructive command"},
 ]
 
-def check_rules(tool_name: str, args: dict) -> str | None:
+def check_rules(tool_name:str,args:dict)->str | None:
     for rule in PERMISSION_RULES:
         if tool_name in rule["tools"] and rule["check"](args):
-            return rule["message"]
+            return f"Error: {rule['message']}"
     return None
 
-
-# Gate 3: User approval - wait for confirmation after rule match
-def ask_user(tool_name: str, args: dict, reason: str) -> str:
+def ask_user(tool_name:str,args:dict,reason:str)->bool:
+    # Ask user for permission to run the tool with the given args
     print(f"\n\033[33m[permission] {reason}\033[0m")
     print(f"   Tool: {tool_name}({args})")
-    choice = input("   Allow? [y/N] ").strip().lower()
+    choice = input("Allow? (y/n): ").strip().lower()
     return "allow" if choice in ("y", "yes") else "deny"
 
-
-# Pipeline: all three gates chained
 def check_permission(block) -> bool:
     if block.name == "bash":
         reason = check_deny_list(block.input.get("command", ""))
@@ -202,10 +145,9 @@ def check_permission(block) -> bool:
     return True
 
 
-# -- Agent loop: same as s02, with check_permission() inserted --
 
 def agent_loop(messages: list):
-    while True:
+    while True: # 死循环
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,
             tools=TOOLS, max_tokens=8000,
